@@ -478,6 +478,16 @@ export default function App() {
   // ==========================================================================
   const [ghToken, setGhToken] = useState(() => {
     try {
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        const syncFromUrl = params.get('sync');
+        if (syncFromUrl && syncFromUrl.trim()) {
+          const cleanToken = syncFromUrl.trim();
+          localStorage.setItem(GH_TOKEN_KEY, cleanToken);
+          window.history.replaceState({}, '', window.location.pathname);
+          return cleanToken;
+        }
+      }
       return localStorage.getItem(GH_TOKEN_KEY) || '';
     } catch {
       return '';
@@ -494,6 +504,13 @@ export default function App() {
   const [cloudStatus, setCloudStatus] = useState('local'); // 'local' | 'syncing' | 'synced' | 'error'
   const isRemoteUpdateRef = useRef(false);
   const hasInitialPulledRef = useRef(false);
+  const isPendingSaveRef = useRef(false);
+
+  const getPhoneSyncLink = () => {
+    if (typeof window === 'undefined') return '';
+    const baseUrl = `${window.location.origin}${window.location.pathname}`;
+    return ghToken ? `${baseUrl}?sync=${encodeURIComponent(ghToken)}` : baseUrl;
+  };
 
   // Automatyczny zapis lokalny w przeglądarce
   useEffect(() => {
@@ -633,6 +650,7 @@ export default function App() {
       return;
     }
 
+    isPendingSaveRef.current = true;
     const timer = setTimeout(() => {
       setCloudStatus('syncing');
       fetch(`https://api.github.com/gists/${ghGistId}`, {
@@ -658,11 +676,33 @@ export default function App() {
           if (!res.ok) throw new Error('Błąd zapisu');
           setCloudStatus('synced');
         })
-        .catch(() => setCloudStatus('error'));
+        .catch(() => setCloudStatus('error'))
+        .finally(() => {
+          isPendingSaveRef.current = false;
+        });
     }, 1200);
 
     return () => clearTimeout(timer);
   }, [items, pins, otherIncomes, ads, ghToken, ghGistId]);
+
+  // Automatyczne pobranie zmian przy powrocie do karty (np. odblokowanie telefonu)
+  useEffect(() => {
+    if (!ghToken) return;
+    const handleVisibilityOrFocus = () => {
+      if (
+        document.visibilityState === 'visible' &&
+        !isPendingSaveRef.current
+      ) {
+        pullFromGitHub(ghToken, ghGistId, true);
+      }
+    };
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    return () => {
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+    };
+  }, [ghToken, ghGistId]);
 
   const handleConnectGitHub = () => {
     const trimmed = tokenInput.trim();
@@ -1323,6 +1363,18 @@ export default function App() {
                   Odśwież
                 </button>
                 <button
+                  onClick={() =>
+                    copyTextToClipboard(
+                      getPhoneSyncLink(),
+                      'Skopiowano gotowy link na telefon! Wyślij go sobie i otwórz na telefonie.'
+                    )
+                  }
+                  title="Skopiuj link, który automatycznie połączy telefon"
+                  className="px-2 py-1 rounded-lg bg-sky-500/25 hover:bg-sky-500/35 text-[11px] font-semibold text-sky-200"
+                >
+                  Link na telefon
+                </button>
+                <button
                   onClick={() => setShowBackupModal(true)}
                   className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] text-slate-300"
                 >
@@ -1335,7 +1387,7 @@ export default function App() {
                 className="px-3 py-2.5 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/40 text-sky-300 text-xs font-semibold flex items-center gap-1.5 transition"
               >
                 <Icon name="cloud" className="w-4 h-4" />
-                <span>Chmura Sync (Bez karty)</span>
+                <span>Połącz telefon z komputerem (0 zł)</span>
               </button>
             )}
 
@@ -2907,20 +2959,31 @@ export default function App() {
                 </div>
                 <p className="text-slate-300">
                   Każdy wpis z komputera automatycznie zapisuje się na Twoim
-                  koncie GitHub. Aby widzieć te same dane na telefonie, wklej na
-                  nim ten sam kod dostępu (token).
+                  koncie GitHub. Kliknij poniżej, aby skopiować gotowy link
+                  parujący na telefon:
                 </p>
                 <div className="flex flex-wrap gap-2 pt-1">
                   <button
                     onClick={() =>
                       copyTextToClipboard(
-                        ghToken,
-                        'Skopiowano kod dostępu! Wyślij go sobie i wklej na telefonie.'
+                        getPhoneSyncLink(),
+                        'Skopiowano gotowy link na telefon! Otwórz go w przeglądarce na telefonie.'
                       )
                     }
-                    className="px-3 py-2 rounded-xl bg-sky-500 text-slate-950 font-bold"
+                    className="px-3 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold"
                   >
-                    Skopiuj mój kod na telefon
+                    Skopiuj gotowy link na telefon (1 kliknięcie)
+                  </button>
+                  <button
+                    onClick={() =>
+                      copyTextToClipboard(
+                        ghToken,
+                        'Skopiowano sam kod dostępu (ghp_...).'
+                      )
+                    }
+                    className="px-3 py-2 rounded-xl bg-sky-500/20 border border-sky-500/40 text-sky-200 font-semibold"
+                  >
+                    Skopiuj sam kod
                   </button>
                   <button
                     onClick={handleDisconnectGitHub}
