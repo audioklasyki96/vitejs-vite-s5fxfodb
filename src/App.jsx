@@ -1,10 +1,40 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 
 // ============================================================================
-// PROSTY ZAPIS LOKALNY + PRZENOSZENIE DANYCH NA TELEFON JEDNYM LINKIEM
-// Zero dodatkowych kont, zero tokenów, zero kart kredytowych.
+// ZAPIS LOKALNY + AUTOMATYCZNA SYNCHRONIZACJA Z FIREBASE (WKLEJ KOD Z PKT 4)
 // ============================================================================
 const STORAGE_KEY = 'audio_klasyki_workspace_v3';
+const FIREBASE_CFG_KEY = 'audio_klasyki_fb_cfg_v1';
+
+function parseFirebaseConfig(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const keys = [
+    'apiKey',
+    'authDomain',
+    'projectId',
+    'storageBucket',
+    'messagingSenderId',
+    'appId',
+  ];
+  const extracted = {};
+  keys.forEach((k) => {
+    const regex = new RegExp(`["']?${k}["']?\\s*:\\s*["']([^"']+)["']`);
+    const match = raw.match(regex);
+    if (match && match[1]) {
+      extracted[k] = match[1].trim();
+    }
+  });
+  return extracted.apiKey && extracted.projectId ? extracted : null;
+}
+
+function loadSavedFirebaseConfig() {
+  try {
+    const raw = localStorage.getItem(FIREBASE_CFG_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
 
 function encodeDataToUrl(dataObj) {
   try {
@@ -397,6 +427,12 @@ function loadSavedData() {
             ads: Array.isArray(decoded.ads) ? decoded.ads : DEFAULT_ADS,
           };
           localStorage.setItem(STORAGE_KEY, JSON.stringify(cleanData));
+          if (decoded.fbConfig && decoded.fbConfig.projectId) {
+            localStorage.setItem(
+              FIREBASE_CFG_KEY,
+              JSON.stringify(decoded.fbConfig)
+            );
+          }
           window.history.replaceState({}, '', window.location.pathname);
           return { ...cleanData, fromLink: true };
         }
@@ -531,11 +567,151 @@ export default function App() {
   const [showBackupModal, setShowBackupModal] = useState(false);
   const [importText, setImportText] = useState('');
 
-  // Generowanie linku zawierającego wszystkie aktualne dane (do wysłania na telefon)
+  // Automatyczna synchronizacja z Firebase (wklejony kod z punktu 4)
+  const [fbConfig, setFbConfig] = useState(() => loadSavedFirebaseConfig());
+  const [fbStatus, setFbStatus] = useState('disconnected'); // 'disconnected' | 'connecting' | 'connected' | 'error'
+  const [fbErrorMsg, setFbErrorMsg] = useState('');
+  const [showCloudModal, setShowCloudModal] = useState(false);
+  const [fbInputText, setFbInputText] = useState('');
+  const firestoreRef = useRef(null);
+  const isRemoteUpdateRef = useRef(false);
+
+  // Połączenie na żywo z bazą Firebase Firestore (bez instalowania pakietów)
+  useEffect(() => {
+    if (!fbConfig || !fbConfig.apiKey || !fbConfig.projectId) {
+      setFbStatus('disconnected');
+      firestoreRef.current = null;
+      return;
+    }
+
+    let unsubscribe = null;
+    let cancelled = false;
+    setFbStatus('connecting');
+    setFbErrorMsg('');
+
+    (async () => {
+      try {
+        const appMod = await import(
+          /* @vite-ignore */ 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js'
+        );
+        const fsMod = await import(
+          /* @vite-ignore */ 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js'
+        );
+
+        if (cancelled) return;
+
+        const existingApps = appMod.getApps();
+        const fbApp =
+          existingApps.length > 0
+            ? existingApps[0]
+            : appMod.initializeApp(fbConfig);
+        const db = fsMod.getFirestore(fbApp);
+        const docRef = fsMod.doc(db, 'audio_klasyki_sync', 'main_workspace');
+
+        firestoreRef.current = { db, docRef, setDoc: fsMod.setDoc };
+
+        unsubscribe = fsMod.onSnapshot(
+          docRef,
+          (snap) => {
+            if (cancelled) return;
+            setFbStatus('connected');
+            setFbErrorMsg('');
+            if (snap.exists()) {
+              const remote = snap.data();
+              isRemoteUpdateRef.current = true;
+              if (Array.isArray(remote.items)) setItems(remote.items);
+              if (Array.isArray(remote.pins)) setPins(remote.pins);
+              if (Array.isArray(remote.otherIncomes))
+                setOtherIncomes(remote.otherIncomes);
+              if (Array.isArray(remote.ads)) setAds(remote.ads);
+              setTimeout(() => {
+                isRemoteUpdateRef.current = false;
+              }, 300);
+            } else {
+              fsMod.setDoc(docRef, {
+                items,
+                pins,
+                otherIncomes,
+                ads,
+                updatedAt: Date.now(),
+              });
+            }
+          },
+          (err) => {
+            if (cancelled) return;
+            setFbStatus('error');
+            setFbErrorMsg(
+              err?.message?.includes('permission')
+                ? 'W Firebase włącz bazę w trybie testowym (Start in test mode).'
+                : 'Włącz w Firebase po lewej: Build -> Firestore Database -> Create database.'
+            );
+          }
+        );
+      } catch {
+        if (!cancelled) {
+          setFbStatus('error');
+          setFbErrorMsg('Niepoprawny kod z Firebase. Skopiuj całą ramkę z pkt 4.');
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
+  }, [fbConfig]);
+
+  // Automatyczne wysyłanie zmian do Firebase
+  useEffect(() => {
+    if (
+      fbStatus !== 'connected' ||
+      !firestoreRef.current ||
+      isRemoteUpdateRef.current
+    ) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      const { docRef, setDoc } = firestoreRef.current || {};
+      if (docRef && setDoc) {
+        setDoc(docRef, {
+          items,
+          pins,
+          otherIncomes,
+          ads,
+          updatedAt: Date.now(),
+        }).catch(() => {});
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [items, pins, otherIncomes, ads, fbStatus]);
+
+  const handleSaveFirebaseConfig = () => {
+    const parsed = parseFirebaseConfig(fbInputText);
+    if (!parsed) {
+      showToast(
+        'Nie znaleziono danych. Skopiuj całą ramkę firebaseConfig z punktu 4.',
+        'error'
+      );
+      return;
+    }
+    localStorage.setItem(FIREBASE_CFG_KEY, JSON.stringify(parsed));
+    setFbConfig(parsed);
+    setFbInputText('');
+    setShowCloudModal(false);
+    showToast('Zapisano połączenie z Firebase! Łączenie z bazą...');
+  };
+
+  // Generowanie linku zawierającego wszystkie aktualne dane (oraz konfigurację Firebase)
   const getShareableDataLink = () => {
     if (typeof window === 'undefined') return '';
     const baseUrl = `${window.location.origin}${window.location.pathname}`;
-    const encoded = encodeDataToUrl({ items, pins, otherIncomes, ads });
+    const encoded = encodeDataToUrl({
+      items,
+      pins,
+      otherIncomes,
+      ads,
+      fbConfig,
+    });
     return encoded ? `${baseUrl}#data=${encoded}` : baseUrl;
   };
 
@@ -1166,16 +1342,36 @@ export default function App() {
             </div>
 
             <button
+              onClick={() => setShowCloudModal(true)}
+              className={`px-3.5 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition ${
+                fbStatus === 'connected'
+                  ? 'bg-emerald-500/15 border-emerald-500/50 text-emerald-300'
+                  : fbStatus === 'error'
+                  ? 'bg-rose-500/15 border-rose-500/50 text-rose-300'
+                  : 'bg-sky-500 hover:bg-sky-400 border-sky-400 text-slate-950'
+              }`}
+            >
+              <Icon name="cloud" className="w-4 h-4" />
+              <span>
+                {fbStatus === 'connected'
+                  ? 'Firebase: Połączono'
+                  : fbStatus === 'connecting'
+                  ? 'Łączenie...'
+                  : 'Połącz Firebase (Pkt 4)'}
+              </span>
+            </button>
+
+            <button
               onClick={() =>
                 copyTextToClipboard(
                   getShareableDataLink(),
-                  'Skopiowano link z danymi! Wyślij go sobie na telefon (np. Messenger/WhatsApp) i otwórz.'
+                  'Skopiowano link! Otwórz go na telefonie, aby przenieść dane i połączenie.'
                 )
               }
-              className="px-3.5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-emerald-500/15 transition"
+              className="px-3 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 transition"
             >
-              <Icon name="copy" className="w-4 h-4" />
-              <span>Wyślij na telefon (Link)</span>
+              <Icon name="copy" className="w-4 h-4 text-emerald-400" />
+              <span className="hidden sm:inline">Link na telefon</span>
             </button>
 
             <button
@@ -2719,6 +2915,93 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* ======================================================================
+          MODAL: POŁĄCZENIE Z FIREBASE (WKLEJ KOD Z PUNKTU 4)
+         ====================================================================== */}
+      {showCloudModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-5 space-y-4 shadow-2xl my-8">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <Icon name="cloud" className="w-5 h-5 text-sky-400" />
+                Automatyczny zapis w Firebase (Bez terminala)
+              </h3>
+              <button
+                onClick={() => setShowCloudModal(false)}
+                className="text-slate-400 hover:text-white text-sm px-2 py-1"
+              >
+                Zamknij ✕
+              </button>
+            </div>
+
+            {fbStatus === 'connected' ? (
+              <div className="bg-emerald-950/50 border border-emerald-500/40 rounded-xl p-3.5 text-xs text-emerald-200 space-y-2">
+                <div className="font-bold text-sm text-emerald-300">
+                  Połączono z projektem: {fbConfig?.projectId}
+                </div>
+                <p>
+                  Wszystkie kolumny, punkty na mapie i reklamy zapisują się
+                  automatycznie na żywo między komputerem a telefonem.
+                </p>
+                <button
+                  onClick={() =>
+                    copyTextToClipboard(
+                      getShareableDataLink(),
+                      'Skopiowano link! Otwórz go raz na telefonie, aby połączyć go z bazą.'
+                    )
+                  }
+                  className="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold"
+                >
+                  Skopiuj link do otwarcia na telefonie
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3 text-xs text-slate-300">
+                <ol className="list-decimal list-inside space-y-1.5 bg-slate-950 p-3.5 rounded-xl border border-slate-800">
+                  <li>
+                    W Firebase (punkt 4) skopiuj ramkę{' '}
+                    <code className="text-amber-300">
+                      const firebaseConfig = &#123; ... &#125;
+                    </code>{' '}
+                    i kliknij <strong>Next → Continue to console</strong>.
+                  </li>
+                  <li>
+                    Po lewej stronie kliknij{' '}
+                    <strong>
+                      Build → Firestore Database → Create database → Start in
+                      test mode → Create
+                    </strong>{' '}
+                    (0 zł, bez karty).
+                  </li>
+                  <li>Wklej skopiowany kod poniżej i kliknij Połącz:</li>
+                </ol>
+
+                {fbErrorMsg && (
+                  <div className="p-2.5 rounded-xl bg-rose-950/70 border border-rose-500/50 text-rose-200">
+                    {fbErrorMsg}
+                  </div>
+                )}
+
+                <textarea
+                  rows={5}
+                  placeholder={'Wklej tutaj ramkę z punktu 4:\nconst firebaseConfig = {\n  apiKey: "...",\n  projectId: "..."\n};'}
+                  value={fbInputText}
+                  onChange={(e) => setFbInputText(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl p-2.5 text-xs text-slate-200 font-mono focus:outline-none focus:border-sky-500"
+                />
+
+                <button
+                  onClick={handleSaveFirebaseConfig}
+                  className="w-full py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs sm:text-sm"
+                >
+                  Połącz z moim Firebase
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ======================================================================
           MODAL: PROSTA KOPIA ZAPASOWA (KOPIUJ / WKLEJ)
