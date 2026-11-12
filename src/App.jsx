@@ -418,13 +418,34 @@ function loadSavedData() {
       if (hashPart) {
         const decoded = decodeDataFromUrl(hashPart);
         if (decoded && typeof decoded === 'object') {
+          const existingRaw = localStorage.getItem(STORAGE_KEY);
+          const existing = existingRaw ? JSON.parse(existingRaw) : {};
+          const hasPayload =
+            Array.isArray(decoded.items) ||
+            Array.isArray(decoded.pins) ||
+            Array.isArray(decoded.otherIncomes) ||
+            Array.isArray(decoded.ads);
           const cleanData = {
-            items: Array.isArray(decoded.items) ? decoded.items : DEFAULT_ITEMS,
-            pins: Array.isArray(decoded.pins) ? decoded.pins : DEFAULT_PINS,
+            items: Array.isArray(decoded.items)
+              ? decoded.items
+              : Array.isArray(existing.items)
+              ? existing.items
+              : DEFAULT_ITEMS,
+            pins: Array.isArray(decoded.pins)
+              ? decoded.pins
+              : Array.isArray(existing.pins)
+              ? existing.pins
+              : DEFAULT_PINS,
             otherIncomes: Array.isArray(decoded.otherIncomes)
               ? decoded.otherIncomes
+              : Array.isArray(existing.otherIncomes)
+              ? existing.otherIncomes
               : DEFAULT_OTHER_INCOMES,
-            ads: Array.isArray(decoded.ads) ? decoded.ads : DEFAULT_ADS,
+            ads: Array.isArray(decoded.ads)
+              ? decoded.ads
+              : Array.isArray(existing.ads)
+              ? existing.ads
+              : DEFAULT_ADS,
           };
           localStorage.setItem(STORAGE_KEY, JSON.stringify(cleanData));
           if (decoded.fbConfig && decoded.fbConfig.projectId) {
@@ -434,7 +455,11 @@ function loadSavedData() {
             );
           }
           window.history.replaceState({}, '', window.location.pathname);
-          return { ...cleanData, fromLink: true };
+          return {
+            ...cleanData,
+            fromLink: true,
+            hasImportedPayload: hasPayload,
+          };
         }
       }
     }
@@ -451,6 +476,7 @@ function loadSavedData() {
           : DEFAULT_OTHER_INCOMES,
         ads: Array.isArray(parsed.ads) ? parsed.ads : DEFAULT_ADS,
         fromLink: false,
+        hasImportedPayload: false,
       };
     }
   } catch {
@@ -462,6 +488,7 @@ function loadSavedData() {
     otherIncomes: DEFAULT_OTHER_INCOMES,
     ads: DEFAULT_ADS,
     fromLink: false,
+    hasImportedPayload: false,
   };
 }
 
@@ -571,10 +598,50 @@ export default function App() {
   const [fbConfig, setFbConfig] = useState(() => loadSavedFirebaseConfig());
   const [fbStatus, setFbStatus] = useState('disconnected'); // 'disconnected' | 'connecting' | 'connected' | 'error'
   const [fbErrorMsg, setFbErrorMsg] = useState('');
+  const [lastSyncTime, setLastSyncTime] = useState(null);
   const [showCloudModal, setShowCloudModal] = useState(false);
   const [fbInputText, setFbInputText] = useState('');
   const firestoreRef = useRef(null);
   const isRemoteUpdateRef = useRef(false);
+  const justImportedFromLinkRef = useRef(Boolean(savedData.hasImportedPayload));
+  const latestDataRef = useRef({ items, pins, otherIncomes, ads });
+
+  useEffect(() => {
+    latestDataRef.current = { items, pins, otherIncomes, ads };
+  }, [items, pins, otherIncomes, ads]);
+
+  // Obsługa wklejenia linku #data=... do już otwartej karty w przeglądarce
+  useEffect(() => {
+    const handleHashChange = () => {
+      if (!window.location.hash.includes('data=')) return;
+      const imported = loadSavedData();
+      if (imported.fromLink) {
+        justImportedFromLinkRef.current = Boolean(imported.hasImportedPayload);
+        setItems(imported.items);
+        setPins(imported.pins);
+        setOtherIncomes(imported.otherIncomes);
+        setAds(imported.ads);
+        const updatedCfg = loadSavedFirebaseConfig();
+        if (updatedCfg) setFbConfig(updatedCfg);
+
+        const { docRef, setDoc } = firestoreRef.current || {};
+        if (docRef && setDoc && imported.hasImportedPayload) {
+          justImportedFromLinkRef.current = false;
+          setDoc(docRef, {
+            items: imported.items,
+            pins: imported.pins,
+            otherIncomes: imported.otherIncomes,
+            ads: imported.ads,
+            updatedAt: Date.now(),
+          }).catch(() => {});
+        }
+        showToast('Wczytano zaktualizowane dane z przesłanego linku!');
+      }
+    };
+
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
 
   // Połączenie na żywo z bazą Firebase Firestore (bez instalowania pakietów)
   useEffect(() => {
@@ -616,7 +683,18 @@ export default function App() {
             if (cancelled) return;
             setFbStatus('connected');
             setFbErrorMsg('');
+            setLastSyncTime(new Date().toLocaleTimeString('pl-PL'));
+
             if (snap.exists()) {
+              // Jeśli właśnie otwarto link z nowymi danymi, wyślij je do chmury zamiast nadpisywać
+              if (justImportedFromLinkRef.current) {
+                justImportedFromLinkRef.current = false;
+                fsMod.setDoc(docRef, {
+                  ...latestDataRef.current,
+                  updatedAt: Date.now(),
+                });
+                return;
+              }
               const remote = snap.data();
               isRemoteUpdateRef.current = true;
               if (Array.isArray(remote.items)) setItems(remote.items);
@@ -628,11 +706,9 @@ export default function App() {
                 isRemoteUpdateRef.current = false;
               }, 300);
             } else {
+              justImportedFromLinkRef.current = false;
               fsMod.setDoc(docRef, {
-                items,
-                pins,
-                otherIncomes,
-                ads,
+                ...latestDataRef.current,
                 updatedAt: Date.now(),
               });
             }
@@ -679,9 +755,11 @@ export default function App() {
           otherIncomes,
           ads,
           updatedAt: Date.now(),
-        }).catch(() => {});
+        })
+          .then(() => setLastSyncTime(new Date().toLocaleTimeString('pl-PL')))
+          .catch(() => {});
       }
-    }, 400);
+    }, 150);
     return () => clearTimeout(timer);
   }, [items, pins, otherIncomes, ads, fbStatus]);
 
@@ -1201,13 +1279,36 @@ export default function App() {
   // EKSPORT EXCEL (CSV) ORAZ KOPIA ZAPASOWA
   // ==========================================================================
   const copyTextToClipboard = (text, successMsg) => {
+    const fallbackCopy = () => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (ok) {
+          showToast(successMsg);
+        } else {
+          setShowBackupModal(true);
+          showToast('Skopiuj link ręcznie z okienka.', 'error');
+        }
+      } catch {
+        setShowBackupModal(true);
+        showToast('Skopiuj link ręcznie z okienka.', 'error');
+      }
+    };
+
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard
         .writeText(text)
         .then(() => showToast(successMsg))
-        .catch(() => showToast('Skopiuj ręcznie zaznaczony tekst.', 'error'));
+        .catch(() => fallbackCopy());
     } else {
-      showToast('Twoja przeglądarka zablokowała schowek.', 'error');
+      fallbackCopy();
     }
   };
 
@@ -2940,6 +3041,11 @@ export default function App() {
                 <div className="font-bold text-sm text-emerald-300">
                   Połączono z projektem: {fbConfig?.projectId}
                 </div>
+                {lastSyncTime && (
+                  <div className="text-[11px] text-emerald-300/80">
+                    Ostatnia synchronizacja z chmurą: {lastSyncTime}
+                  </div>
+                )}
                 <p>
                   Wszystkie kolumny, punkty na mapie i reklamy zapisują się
                   automatycznie na żywo między komputerem a telefonem.
@@ -3024,24 +3130,29 @@ export default function App() {
 
             <div className="bg-emerald-950/40 border border-emerald-500/30 rounded-xl p-3.5 space-y-2 text-xs text-slate-300">
               <div className="font-bold text-emerald-300">
-                Najszybszy sposób na telefon (1 kliknięcie):
+                Najszybszy sposób przeniesienia danych (1 kliknięcie):
               </div>
               <p>
-                Kliknij przycisk poniżej, wyślij skopiowany link sobie na
-                telefon (przez WhatsApp, Messenger lub e-mail) i otwórz go —
-                wszystkie Twoje kolumny, punkty na mapie i reklamy od razu
-                zapiszą się na telefonie.
+                Kliknij przycisk poniżej (lub zaznacz i skopiuj gotowy link z
+                ramki), wyślij go sobie i otwórz na drugim urządzeniu:
               </p>
+              <input
+                type="text"
+                readOnly
+                value={getShareableDataLink()}
+                onFocus={(e) => e.target.select()}
+                className="w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-2 text-[11px] text-emerald-300 font-mono"
+              />
               <button
                 onClick={() =>
                   copyTextToClipboard(
                     getShareableDataLink(),
-                    'Skopiowano link z danymi! Otwórz go na telefonie.'
+                    'Skopiowano link z danymi! Otwórz go na drugim urządzeniu.'
                   )
                 }
                 className="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs sm:text-sm"
               >
-                Skopiuj link z danymi na telefon
+                Skopiuj link z danymi
               </button>
             </div>
 
