@@ -1,14 +1,43 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 
 // ============================================================================
-// KONFIGURACJA DARMOWEJ CHMURY GITHUB (BEZ KARTY KREDYTOWEJ)
-// Dane zapisują się automatycznie w prywatnym pliku (Gist) na Twoim GitHubie.
+// PROSTY ZAPIS LOKALNY + PRZENOSZENIE DANYCH NA TELEFON JEDNYM LINKIEM
+// Zero dodatkowych kont, zero tokenów, zero kart kredytowych.
 // ============================================================================
 const STORAGE_KEY = 'audio_klasyki_workspace_v3';
-const GH_TOKEN_KEY = 'audio_klasyki_gh_token';
-const GH_GIST_ID_KEY = 'audio_klasyki_gh_gist_id';
-const GH_GIST_FILENAME = 'audio_klasyki_data.json';
-const GH_GIST_DESC = 'Audio Klasyki - Baza Danych';
+
+function encodeDataToUrl(dataObj) {
+  try {
+    const json = JSON.stringify(dataObj);
+    const bytes = new TextEncoder().encode(json);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary)
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function decodeDataFromUrl(encoded) {
+  try {
+    let b64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const json = new TextDecoder().decode(bytes);
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
 
 const MONTH_NAMES_PL = [
   'Styczeń',
@@ -353,6 +382,28 @@ const DEFAULT_ADS = [
 
 function loadSavedData() {
   try {
+    // 1. Sprawdź, czy otwarto link przesłany z komputera/telefonu (#data=...)
+    if (typeof window !== 'undefined' && window.location.hash.includes('data=')) {
+      const hashPart = window.location.hash.split('data=')[1]?.split('&')[0];
+      if (hashPart) {
+        const decoded = decodeDataFromUrl(hashPart);
+        if (decoded && typeof decoded === 'object') {
+          const cleanData = {
+            items: Array.isArray(decoded.items) ? decoded.items : DEFAULT_ITEMS,
+            pins: Array.isArray(decoded.pins) ? decoded.pins : DEFAULT_PINS,
+            otherIncomes: Array.isArray(decoded.otherIncomes)
+              ? decoded.otherIncomes
+              : DEFAULT_OTHER_INCOMES,
+            ads: Array.isArray(decoded.ads) ? decoded.ads : DEFAULT_ADS,
+          };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(cleanData));
+          window.history.replaceState({}, '', window.location.pathname);
+          return { ...cleanData, fromLink: true };
+        }
+      }
+    }
+
+    // 2. Wczytaj zapis z pamięci urządzenia
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
@@ -363,6 +414,7 @@ function loadSavedData() {
           ? parsed.otherIncomes
           : DEFAULT_OTHER_INCOMES,
         ads: Array.isArray(parsed.ads) ? parsed.ads : DEFAULT_ADS,
+        fromLink: false,
       };
     }
   } catch {
@@ -373,6 +425,7 @@ function loadSavedData() {
     pins: DEFAULT_PINS,
     otherIncomes: DEFAULT_OTHER_INCOMES,
     ads: DEFAULT_ADS,
+    fromLink: false,
   };
 }
 
@@ -408,6 +461,12 @@ export default function App() {
       setToast((prev) => (prev && prev.message === message ? null : prev));
     }, 3500);
   };
+
+  useEffect(() => {
+    if (savedData.fromLink) {
+      showToast('Wczytano najnowsze dane z przesłanego linku!');
+    }
+  }, [savedData.fromLink]);
 
   // Filtry okresu (Rok i Miesiąc) oraz podwidok rozbicia
   const [selectedYear, setSelectedYear] = useState('ALL');
@@ -468,48 +527,16 @@ export default function App() {
     notes: '',
   });
 
-  // Modal kopii zapasowej i synchronizacji bez karty kredytowej
+  // Modal kopii zapasowej
   const [showBackupModal, setShowBackupModal] = useState(false);
   const [importText, setImportText] = useState('');
-  const [tokenInput, setTokenInput] = useState('');
 
-  // ==========================================================================
-  // DARMOWA SYNCHRONIZACJA MIĘDZY TELEFONEM A KOMPUTEREM (GITHUB GIST - 0 ZŁ)
-  // ==========================================================================
-  const [ghToken, setGhToken] = useState(() => {
-    try {
-      if (typeof window !== 'undefined') {
-        const params = new URLSearchParams(window.location.search);
-        const syncFromUrl = params.get('sync');
-        if (syncFromUrl && syncFromUrl.trim()) {
-          const cleanToken = syncFromUrl.trim();
-          localStorage.setItem(GH_TOKEN_KEY, cleanToken);
-          window.history.replaceState({}, '', window.location.pathname);
-          return cleanToken;
-        }
-      }
-      return localStorage.getItem(GH_TOKEN_KEY) || '';
-    } catch {
-      return '';
-    }
-  });
-  const [ghGistId, setGhGistId] = useState(() => {
-    try {
-      return localStorage.getItem(GH_GIST_ID_KEY) || '';
-    } catch {
-      return '';
-    }
-  });
-  const [ghUsername, setGhUsername] = useState('');
-  const [cloudStatus, setCloudStatus] = useState('local'); // 'local' | 'syncing' | 'synced' | 'error'
-  const isRemoteUpdateRef = useRef(false);
-  const hasInitialPulledRef = useRef(false);
-  const isPendingSaveRef = useRef(false);
-
-  const getPhoneSyncLink = () => {
+  // Generowanie linku zawierającego wszystkie aktualne dane (do wysłania na telefon)
+  const getShareableDataLink = () => {
     if (typeof window === 'undefined') return '';
     const baseUrl = `${window.location.origin}${window.location.pathname}`;
-    return ghToken ? `${baseUrl}?sync=${encodeURIComponent(ghToken)}` : baseUrl;
+    const encoded = encodeDataToUrl({ items, pins, otherIncomes, ads });
+    return encoded ? `${baseUrl}#data=${encoded}` : baseUrl;
   };
 
   // Automatyczny zapis lokalny w przeglądarce
@@ -523,209 +550,6 @@ export default function App() {
       // Ignoruj błędy zapisu w trybie prywatnym
     }
   }, [items, pins, otherIncomes, ads]);
-
-  // Pobranie najnowszych danych z prywatnego pliku na GitHubie
-  const pullFromGitHub = async (tokenToUse, gistIdToUse, silent = false) => {
-    if (!tokenToUse) return;
-    setCloudStatus('syncing');
-    try {
-      const headers = {
-        Authorization: `Bearer ${tokenToUse}`,
-        Accept: 'application/vnd.github+json',
-      };
-
-      const userRes = await fetch('https://api.github.com/user', { headers });
-      if (!userRes.ok) throw new Error('Błędny token GitHub');
-      const userData = await userRes.json();
-      setGhUsername(userData.login || 'GitHub');
-
-      let targetGistId = gistIdToUse;
-      let gistData = null;
-
-      if (targetGistId) {
-        const singleRes = await fetch(
-          `https://api.github.com/gists/${targetGistId}`,
-          { headers }
-        );
-        if (singleRes.ok) {
-          gistData = await singleRes.json();
-        } else {
-          targetGistId = '';
-        }
-      }
-
-      if (!targetGistId) {
-        const listRes = await fetch(
-          'https://api.github.com/gists?per_page=50',
-          { headers }
-        );
-        if (!listRes.ok) throw new Error('Nie udało się pobrać listy plików');
-        const gists = await listRes.json();
-        const existing = gists.find(
-          (g) =>
-            g.description === GH_GIST_DESC ||
-            (g.files && g.files[GH_GIST_FILENAME])
-        );
-        if (existing) {
-          targetGistId = existing.id;
-          const fullRes = await fetch(
-            `https://api.github.com/gists/${targetGistId}`,
-            { headers }
-          );
-          if (fullRes.ok) gistData = await fullRes.json();
-        }
-      }
-
-      if (gistData && gistData.files && gistData.files[GH_GIST_FILENAME]) {
-        const rawContent = gistData.files[GH_GIST_FILENAME].content;
-        const parsed = JSON.parse(rawContent);
-        isRemoteUpdateRef.current = true;
-        if (Array.isArray(parsed.items)) setItems(parsed.items);
-        if (Array.isArray(parsed.pins)) setPins(parsed.pins);
-        if (Array.isArray(parsed.otherIncomes))
-          setOtherIncomes(parsed.otherIncomes);
-        if (Array.isArray(parsed.ads)) setAds(parsed.ads);
-
-        setGhGistId(targetGistId);
-        localStorage.setItem(GH_GIST_ID_KEY, targetGistId);
-        hasInitialPulledRef.current = true;
-        setCloudStatus('synced');
-        if (!silent) showToast('Pobrano najnowsze dane z Twojego GitHuba!');
-      } else {
-        // Pierwsze połączenie – utwórz prywatny plik na GitHubie
-        const createRes = await fetch('https://api.github.com/gists', {
-          method: 'POST',
-          headers: {
-            ...headers,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            description: GH_GIST_DESC,
-            public: false,
-            files: {
-              [GH_GIST_FILENAME]: {
-                content: JSON.stringify(
-                  { items, pins, otherIncomes, ads },
-                  null,
-                  2
-                ),
-              },
-            },
-          }),
-        });
-        if (!createRes.ok) throw new Error('Nie udało się utworzyć pliku');
-        const createdGist = await createRes.json();
-        setGhGistId(createdGist.id);
-        localStorage.setItem(GH_GIST_ID_KEY, createdGist.id);
-        hasInitialPulledRef.current = true;
-        setCloudStatus('synced');
-        if (!silent)
-          showToast('Połączono z GitHubem! Dane są zapisywane w chmurze.');
-      }
-    } catch {
-      setCloudStatus('error');
-      if (!silent) {
-        showToast(
-          'Błąd połączenia z GitHubem. Sprawdź, czy token ma zaznaczone "gist".',
-          'error'
-        );
-      }
-    }
-  };
-
-  // Automatyczne pobranie przy otwarciu aplikacji
-  useEffect(() => {
-    if (!ghToken) {
-      setCloudStatus('local');
-      return;
-    }
-    pullFromGitHub(ghToken, ghGistId, true);
-  }, [ghToken]);
-
-  // Automatyczny zapis każdej zmiany na GitHubie (z opóźnieniem 1,2 s)
-  useEffect(() => {
-    if (!ghToken || !ghGistId || !hasInitialPulledRef.current) return;
-    if (isRemoteUpdateRef.current) {
-      isRemoteUpdateRef.current = false;
-      return;
-    }
-
-    isPendingSaveRef.current = true;
-    const timer = setTimeout(() => {
-      setCloudStatus('syncing');
-      fetch(`https://api.github.com/gists/${ghGistId}`, {
-        method: 'PATCH',
-        headers: {
-          Authorization: `Bearer ${ghToken}`,
-          Accept: 'application/vnd.github+json',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          files: {
-            [GH_GIST_FILENAME]: {
-              content: JSON.stringify(
-                { items, pins, otherIncomes, ads },
-                null,
-                2
-              ),
-            },
-          },
-        }),
-      })
-        .then((res) => {
-          if (!res.ok) throw new Error('Błąd zapisu');
-          setCloudStatus('synced');
-        })
-        .catch(() => setCloudStatus('error'))
-        .finally(() => {
-          isPendingSaveRef.current = false;
-        });
-    }, 1200);
-
-    return () => clearTimeout(timer);
-  }, [items, pins, otherIncomes, ads, ghToken, ghGistId]);
-
-  // Automatyczne pobranie zmian przy powrocie do karty (np. odblokowanie telefonu)
-  useEffect(() => {
-    if (!ghToken) return;
-    const handleVisibilityOrFocus = () => {
-      if (
-        document.visibilityState === 'visible' &&
-        !isPendingSaveRef.current
-      ) {
-        pullFromGitHub(ghToken, ghGistId, true);
-      }
-    };
-    window.addEventListener('focus', handleVisibilityOrFocus);
-    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
-    return () => {
-      window.removeEventListener('focus', handleVisibilityOrFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
-    };
-  }, [ghToken, ghGistId]);
-
-  const handleConnectGitHub = () => {
-    const trimmed = tokenInput.trim();
-    if (!trimmed) {
-      showToast('Wklej kod dostępu (token) z GitHuba.', 'error');
-      return;
-    }
-    localStorage.setItem(GH_TOKEN_KEY, trimmed);
-    setGhToken(trimmed);
-    setTokenInput('');
-    setShowBackupModal(false);
-  };
-
-  const handleDisconnectGitHub = () => {
-    localStorage.removeItem(GH_TOKEN_KEY);
-    localStorage.removeItem(GH_GIST_ID_KEY);
-    setGhToken('');
-    setGhGistId('');
-    setGhUsername('');
-    hasInitialPulledRef.current = false;
-    setCloudStatus('local');
-    showToast('Odłączono synchronizację z chmurą.');
-  };
 
   // ==========================================================================
   // OBLICZENIA FINANSOWE (MIESIĄCE, LATA, PODSUMOWANIA)
@@ -1324,7 +1148,8 @@ export default function App() {
               </div>
             </div>
           </div>
-          {/* Łączny zysk + Synchronizacja bez karty + Eksport */}
+
+          {/* Łączny zysk + Przesyłanie na telefon + Eksport */}
           <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap">
             <div className="bg-slate-800/80 border border-slate-700 rounded-xl px-3 py-1.5 text-right">
               <div className="text-[10px] uppercase tracking-wider text-slate-400">
@@ -1340,56 +1165,18 @@ export default function App() {
               </div>
             </div>
 
-            {ghToken ? (
-              <div className="flex items-center gap-2 bg-emerald-950/60 border border-emerald-500/40 rounded-xl px-2.5 py-1.5">
-                <div className="text-left">
-                  <div className="text-[11px] font-semibold text-emerald-300 flex items-center gap-1">
-                    <Icon name="cloud" className="w-3.5 h-3.5" />
-                    {cloudStatus === 'syncing'
-                      ? 'Zapisywanie...'
-                      : cloudStatus === 'error'
-                      ? 'Błąd zapisu'
-                      : 'Zapisano w chmurze'}
-                  </div>
-                  <div className="text-[10px] text-slate-300">
-                    Konto: {ghUsername || 'GitHub'}
-                  </div>
-                </div>
-                <button
-                  onClick={() => pullFromGitHub(ghToken, ghGistId, false)}
-                  title="Pobierz najnowsze zmiany z drugiego urządzenia"
-                  className="px-2 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-[11px] font-semibold text-emerald-200"
-                >
-                  Odśwież
-                </button>
-                <button
-                  onClick={() =>
-                    copyTextToClipboard(
-                      getPhoneSyncLink(),
-                      'Skopiowano gotowy link na telefon! Wyślij go sobie i otwórz na telefonie.'
-                    )
-                  }
-                  title="Skopiuj link, który automatycznie połączy telefon"
-                  className="px-2 py-1 rounded-lg bg-sky-500/25 hover:bg-sky-500/35 text-[11px] font-semibold text-sky-200"
-                >
-                  Link na telefon
-                </button>
-                <button
-                  onClick={() => setShowBackupModal(true)}
-                  className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] text-slate-300"
-                >
-                  Opcje
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => setShowBackupModal(true)}
-                className="px-3 py-2.5 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/40 text-sky-300 text-xs font-semibold flex items-center gap-1.5 transition"
-              >
-                <Icon name="cloud" className="w-4 h-4" />
-                <span>Połącz telefon z komputerem (0 zł)</span>
-              </button>
-            )}
+            <button
+              onClick={() =>
+                copyTextToClipboard(
+                  getShareableDataLink(),
+                  'Skopiowano link z danymi! Wyślij go sobie na telefon (np. Messenger/WhatsApp) i otwórz.'
+                )
+              }
+              className="px-3.5 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 shadow-lg shadow-emerald-500/15 transition"
+            >
+              <Icon name="copy" className="w-4 h-4" />
+              <span>Wyślij na telefon (Link)</span>
+            </button>
 
             <button
               onClick={handleExportCSV}
@@ -1402,11 +1189,11 @@ export default function App() {
 
             <button
               onClick={() => setShowBackupModal(true)}
-              title="Kopia zapasowa i ustawienia chmury"
+              title="Kopia zapasowa"
               className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-medium flex items-center gap-1.5 transition"
             >
-              <Icon name="copy" className="w-4 h-4 text-sky-400" />
-              <span className="hidden md:inline">Kopia / Sync</span>
+              <Icon name="cloud" className="w-4 h-4 text-sky-400" />
+              <span className="hidden md:inline">Kopia</span>
             </button>
           </div>
         </div>
@@ -2934,15 +2721,15 @@ export default function App() {
       </main>
 
       {/* ======================================================================
-          MODAL: DARMOWA SYNCHRONIZACJA GITHUB (BEZ KARTY) + KOPIA ZAPASOWA
+          MODAL: PROSTA KOPIA ZAPASOWA (KOPIUJ / WKLEJ)
          ====================================================================== */}
       {showBackupModal && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-lg w-full p-5 space-y-4 shadow-2xl my-8">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-bold text-white flex items-center gap-2">
-                <Icon name="cloud" className="w-5 h-5 text-sky-400" />
-                Darmowy zapis w chmurze (bez karty kredytowej)
+                <Icon name="copy" className="w-5 h-5 text-amber-400" />
+                Kopia zapasowa i przenoszenie na telefon
               </h3>
               <button
                 onClick={() => setShowBackupModal(false)}
@@ -2952,93 +2739,32 @@ export default function App() {
               </button>
             </div>
 
-            {ghToken ? (
-              <div className="bg-emerald-950/40 border border-emerald-500/40 rounded-xl p-3.5 space-y-2.5 text-xs">
-                <div className="font-bold text-emerald-300">
-                  Synchronizacja jest aktywna (konto: {ghUsername || 'GitHub'})
-                </div>
-                <p className="text-slate-300">
-                  Każdy wpis z komputera automatycznie zapisuje się na Twoim
-                  koncie GitHub. Kliknij poniżej, aby skopiować gotowy link
-                  parujący na telefon:
-                </p>
-                <div className="flex flex-wrap gap-2 pt-1">
-                  <button
-                    onClick={() =>
-                      copyTextToClipboard(
-                        getPhoneSyncLink(),
-                        'Skopiowano gotowy link na telefon! Otwórz go w przeglądarce na telefonie.'
-                      )
-                    }
-                    className="px-3 py-2 rounded-xl bg-emerald-500 text-slate-950 font-bold"
-                  >
-                    Skopiuj gotowy link na telefon (1 kliknięcie)
-                  </button>
-                  <button
-                    onClick={() =>
-                      copyTextToClipboard(
-                        ghToken,
-                        'Skopiowano sam kod dostępu (ghp_...).'
-                      )
-                    }
-                    className="px-3 py-2 rounded-xl bg-sky-500/20 border border-sky-500/40 text-sky-200 font-semibold"
-                  >
-                    Skopiuj sam kod
-                  </button>
-                  <button
-                    onClick={handleDisconnectGitHub}
-                    className="px-3 py-2 rounded-xl bg-rose-950 border border-rose-500/40 text-rose-200 font-semibold"
-                  >
-                    Odłącz chmurę
-                  </button>
-                </div>
+            <div className="bg-emerald-950/40 border border-emerald-500/30 rounded-xl p-3.5 space-y-2 text-xs text-slate-300">
+              <div className="font-bold text-emerald-300">
+                Najszybszy sposób na telefon (1 kliknięcie):
               </div>
-            ) : (
-              <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 space-y-2.5 text-xs text-slate-300">
-                <div className="font-semibold text-sky-400">
-                  Połącz aplikację ze swoim darmowym kontem GitHub (30 sekund, 0 zł):
-                </div>
-                <ol className="list-decimal list-inside space-y-1.5 text-slate-300">
-                  <li>
-                    Kliknij ten gotowy link:{' '}
-                    <a
-                      href="https://github.com/settings/tokens/new?scopes=gist&description=AudioKlasyki"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-amber-400 underline font-bold"
-                    >
-                      Utwórz darmowy kod na GitHubie →
-                    </a>
-                  </li>
-                  <li>
-                    Na otwartej stronie zjedź na sam dół i kliknij zielony
-                    przycisk <strong className="text-white">Generate token</strong>.
-                  </li>
-                  <li>
-                    Skopiuj wygenerowany kod (zaczyna się od{' '}
-                    <code className="text-amber-300">ghp_...</code>) i wklej go
-                    poniżej:
-                  </li>
-                </ol>
-                <input
-                  type="text"
-                  placeholder="Wklej tutaj kod ghp_..."
-                  value={tokenInput}
-                  onChange={(e) => setTokenInput(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-sky-500"
-                />
-                <button
-                  onClick={handleConnectGitHub}
-                  className="w-full py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-xs"
-                >
-                  Połącz i zapisuj automatycznie
-                </button>
-              </div>
-            )}
+              <p>
+                Kliknij przycisk poniżej, wyślij skopiowany link sobie na
+                telefon (przez WhatsApp, Messenger lub e-mail) i otwórz go —
+                wszystkie Twoje kolumny, punkty na mapie i reklamy od razu
+                zapiszą się na telefonie.
+              </p>
+              <button
+                onClick={() =>
+                  copyTextToClipboard(
+                    getShareableDataLink(),
+                    'Skopiowano link z danymi! Otwórz go na telefonie.'
+                  )
+                }
+                className="w-full py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs sm:text-sm"
+              >
+                Skopiuj link z danymi na telefon
+              </button>
+            </div>
 
             <div className="pt-2 border-t border-slate-800 space-y-2">
               <div className="text-xs font-semibold text-slate-300">
-                Ręczna kopia zapasowa (kopiuj / wklej):
+                Ręczna kopia zapasowa (tekst):
               </div>
               <button
                 onClick={() =>
@@ -3049,7 +2775,7 @@ export default function App() {
                 }
                 className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-xs sm:text-sm"
               >
-                Skopiuj wszystkie aktualne dane do schowka
+                Skopiuj wszystkie dane do schowka
               </button>
 
               <textarea
