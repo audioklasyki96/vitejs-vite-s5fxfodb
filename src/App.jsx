@@ -420,6 +420,18 @@ const DEFAULT_ADS = [
 
 function loadSavedData() {
   try {
+    // 0. Sprawdź, czy otwarto krótki link z konfiguracją Firebase (#fb=...)
+    if (typeof window !== 'undefined' && window.location.hash.includes('fb=')) {
+      const fbPart = window.location.hash.split('fb=')[1]?.split('&')[0];
+      if (fbPart) {
+        const decodedFb = decodeDataFromUrl(fbPart);
+        if (decodedFb && decodedFb.projectId) {
+          localStorage.setItem(FIREBASE_CFG_KEY, JSON.stringify(decodedFb));
+        }
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+    }
+
     // 1. Sprawdź, czy otwarto link przesłany z komputera/telefonu (#data=...)
     if (typeof window !== 'undefined' && window.location.hash.includes('data=')) {
       const hashPart = window.location.hash.split('data=')[1]?.split('&')[0];
@@ -545,6 +557,10 @@ export default function App() {
   const [inventorySubView, setInventorySubView] = useState('list'); // 'list' | 'breakdown'
 
   // Filtry tabeli sprzętu
+  const [searchQuery, setSearchQuery] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('Wszystkie');
+  const [statusFilter, setStatusFilter] = useState('Wszystkie');
+
   // Edycja ceny sprzedaży/kosztów bezpośrednio na liście
   const [editingItemId, setEditingItemId] = useState(null);
   const [editSellValue, setEditSellValue] = useState('');
@@ -621,6 +637,17 @@ export default function App() {
   // Obsługa wklejenia linku #data=... do już otwartej karty w przeglądarce
   useEffect(() => {
     const handleHashChange = () => {
+      if (window.location.hash.includes('fb=')) {
+        const fbPart = window.location.hash.split('fb=')[1]?.split('&')[0];
+        const decodedFb = fbPart ? decodeDataFromUrl(fbPart) : null;
+        if (decodedFb && decodedFb.projectId) {
+          localStorage.setItem(FIREBASE_CFG_KEY, JSON.stringify(decodedFb));
+          setFbConfig(decodedFb);
+          window.history.replaceState({}, '', window.location.pathname);
+          showToast('Połączono telefon z bazą Firebase!');
+        }
+        return;
+      }
       if (!window.location.hash.includes('data=')) return;
       const imported = loadSavedData();
       if (imported.fromLink) {
@@ -791,12 +818,15 @@ export default function App() {
   const getShareableDataLink = () => {
     if (typeof window === 'undefined') return '';
     const baseUrl = `${window.location.origin}${window.location.pathname}`;
+    if (fbConfig && fbConfig.projectId) {
+      const encodedFb = encodeDataToUrl(fbConfig);
+      return encodedFb ? `${baseUrl}#fb=${encodedFb}` : baseUrl;
+    }
     const encoded = encodeDataToUrl({
       items,
       pins,
       otherIncomes,
       ads,
-      fbConfig,
     });
     return encoded ? `${baseUrl}#data=${encoded}` : baseUrl;
   };
