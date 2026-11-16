@@ -293,6 +293,8 @@ const DEFAULT_ITEMS = [
     date: '2026-10-12',
     buyPrice: 1800,
     repairCost: 350,
+    transportCost: 150,
+    adCost: 30,
     sellPrice: 3400,
     notes: 'Regeneracja zawieszeń, kupione w Dortmundzie',
   },
@@ -303,6 +305,8 @@ const DEFAULT_ITEMS = [
     date: '2026-10-25',
     buyPrice: 2200,
     repairCost: 400,
+    transportCost: 120,
+    adCost: 25,
     sellPrice: 3950,
     notes: 'Przegląd końcówki mocy + czyszczenie potencjometrów',
   },
@@ -313,6 +317,8 @@ const DEFAULT_ITEMS = [
     date: '2026-11-04',
     buyPrice: 2900,
     repairCost: 250,
+    transportCost: 180,
+    adCost: 0,
     sellPrice: null,
     notes: 'W trakcie renowacji obudowy fornir orzech',
   },
@@ -323,6 +329,8 @@ const DEFAULT_ITEMS = [
     date: '2026-11-09',
     buyPrice: 2400,
     repairCost: 150,
+    transportCost: 140,
+    adCost: 40,
     sellPrice: 3700,
     notes: 'Odbiór Eindhoven, wymienione podświetlenie LED',
   },
@@ -537,14 +545,12 @@ export default function App() {
   const [inventorySubView, setInventorySubView] = useState('list'); // 'list' | 'breakdown'
 
   // Filtry tabeli sprzętu
-  const [searchQuery, setSearchQuery] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('Wszystkie');
-  const [statusFilter, setStatusFilter] = useState('Wszystkie');
-
-  // Edycja ceny sprzedaży/naprawy bezpośrednio na liście
+  // Edycja ceny sprzedaży/kosztów bezpośrednio na liście
   const [editingItemId, setEditingItemId] = useState(null);
   const [editSellValue, setEditSellValue] = useState('');
   const [editRepairValue, setEditRepairValue] = useState('');
+  const [editTransportValue, setEditTransportValue] = useState('');
+  const [editAdValue, setEditAdValue] = useState('');
 
   // Formularz nowego sprzętu
   const todayStr = new Date().toISOString().slice(0, 10);
@@ -554,6 +560,8 @@ export default function App() {
     date: todayStr,
     buyPrice: '',
     repairCost: '',
+    transportCost: '',
+    adCost: '',
     sellPrice: '',
     notes: '',
   });
@@ -857,6 +865,8 @@ export default function App() {
   const periodStats = useMemo(() => {
     let totalBuy = 0;
     let totalRepair = 0;
+    let totalTransport = 0;
+    let totalAd = 0;
     let totalSell = 0;
     let realizedProfit = 0;
     let stockValue = 0;
@@ -866,16 +876,22 @@ export default function App() {
     periodItems.forEach((item) => {
       const buy = Number(item.buyPrice) || 0;
       const rep = Number(item.repairCost) || 0;
+      const trans = Number(item.transportCost) || 0;
+      const ad = Number(item.adCost) || 0;
+      const allCosts = buy + rep + trans + ad;
+
       totalBuy += buy;
       totalRepair += rep;
+      totalTransport += trans;
+      totalAd += ad;
 
       if (item.sellPrice !== null && item.sellPrice !== '') {
         const sell = Number(item.sellPrice) || 0;
         totalSell += sell;
-        realizedProfit += sell - buy - rep;
+        realizedProfit += sell - allCosts;
         soldCount += 1;
       } else {
-        stockValue += buy + rep;
+        stockValue += allCosts;
         stockCount += 1;
       }
     });
@@ -888,6 +904,9 @@ export default function App() {
     return {
       totalBuy,
       totalRepair,
+      totalTransport,
+      totalAd,
+      totalExtraCosts: totalRepair + totalTransport + totalAd,
       totalSell,
       realizedProfit,
       stockValue,
@@ -905,7 +924,9 @@ export default function App() {
         sum +
         ((Number(item.sellPrice) || 0) -
           (Number(item.buyPrice) || 0) -
-          (Number(item.repairCost) || 0))
+          (Number(item.repairCost) || 0) -
+          (Number(item.transportCost) || 0) -
+          (Number(item.adCost) || 0))
       );
     }, 0);
     const otherNet = otherIncomes.reduce(
@@ -926,6 +947,8 @@ export default function App() {
           year: y,
           buy: 0,
           repair: 0,
+          transport: 0,
+          ad: 0,
           sell: 0,
           equipProfit: 0,
           otherProfit: 0,
@@ -947,6 +970,8 @@ export default function App() {
           label: `${MONTH_NAMES_PL[monthIdx]} ${y}`,
           buy: 0,
           repair: 0,
+          transport: 0,
+          ad: 0,
           sell: 0,
           equipProfit: 0,
           otherProfit: 0,
@@ -963,13 +988,17 @@ export default function App() {
       const ym = d.slice(0, 7);
       const buy = Number(item.buyPrice) || 0;
       const rep = Number(item.repairCost) || 0;
+      const trans = Number(item.transportCost) || 0;
+      const ad = Number(item.adCost) || 0;
       const isSold = item.sellPrice !== null && item.sellPrice !== '';
       const sell = isSold ? Number(item.sellPrice) || 0 : 0;
-      const profit = isSold ? sell - buy - rep : 0;
+      const profit = isSold ? sell - buy - rep - trans - ad : 0;
 
       const yObj = ensureYear(y);
       yObj.buy += buy;
       yObj.repair += rep;
+      yObj.transport += trans;
+      yObj.ad += ad;
       yObj.sell += sell;
       yObj.equipProfit += profit;
       yObj.boughtCount += 1;
@@ -978,6 +1007,8 @@ export default function App() {
       const mObj = ensureMonth(ym);
       mObj.buy += buy;
       mObj.repair += rep;
+      mObj.transport += trans;
+      mObj.ad += ad;
       mObj.sell += sell;
       mObj.equipProfit += profit;
       mObj.boughtCount += 1;
@@ -1020,6 +1051,8 @@ export default function App() {
       date: newItem.date || todayStr,
       buyPrice: Number(newItem.buyPrice) || 0,
       repairCost: Number(newItem.repairCost) || 0,
+      transportCost: Number(newItem.transportCost) || 0,
+      adCost: Number(newItem.adCost) || 0,
       sellPrice:
         newItem.sellPrice === '' ? null : Number(newItem.sellPrice) || 0,
       notes: newItem.notes.trim(),
@@ -1031,6 +1064,8 @@ export default function App() {
       date: newItem.date || todayStr,
       buyPrice: '',
       repairCost: '',
+      transportCost: '',
+      adCost: '',
       sellPrice: '',
       notes: '',
     });
@@ -1050,6 +1085,8 @@ export default function App() {
         : ''
     );
     setEditRepairValue(String(item.repairCost || 0));
+    setEditTransportValue(String(item.transportCost || 0));
+    setEditAdValue(String(item.adCost || 0));
   };
 
   const saveEditItem = (id) => {
@@ -1059,6 +1096,8 @@ export default function App() {
         return {
           ...it,
           repairCost: Number(editRepairValue) || 0,
+          transportCost: Number(editTransportValue) || 0,
+          adCost: Number(editAdValue) || 0,
           sellPrice:
             editSellValue.trim() === '' ? null : Number(editSellValue) || 0,
         };
@@ -1317,13 +1356,15 @@ export default function App() {
       'AUDIO KLASYKI - RAPORT FINANSOWY I MAGAZYNOWY',
       '',
       '1. SPRZET (KOLUMNY, WZMACNIACZE, INNE)',
-      'Data;Nazwa;Kategoria;Kupno (zl);Naprawa (zl);Sprzedaz (zl);Zysk netto (zl);Status;Notatki',
+      'Data;Nazwa;Kategoria;Kupno (zl);Naprawa (zl);Transport (zl);Ogloszenie (zl);Sprzedaz (zl);Zysk netto (zl);Status;Notatki',
     ];
 
     items.forEach((it) => {
       const isSold = it.sellPrice !== null && it.sellPrice !== '';
+      const trans = Number(it.transportCost) || 0;
+      const ad = Number(it.adCost) || 0;
       const profit = isSold
-        ? Number(it.sellPrice) - Number(it.buyPrice) - Number(it.repairCost)
+        ? Number(it.sellPrice) - Number(it.buyPrice) - Number(it.repairCost) - trans - ad
         : 0;
       lines.push(
         [
@@ -1332,6 +1373,8 @@ export default function App() {
           it.category,
           it.buyPrice,
           it.repairCost,
+          trans,
+          ad,
           isSold ? it.sellPrice : '',
           isSold ? profit : '',
           isSold ? 'Sprzedane' : 'Na stanie',
@@ -1342,7 +1385,7 @@ export default function App() {
 
     lines.push('', '2. PODSUMOWANIE MIESIECZNE');
     lines.push(
-      'Miesiac;Kupno (zl);Naprawy (zl);Sprzedaz sprzetu (zl);Zysk ze sprzetu (zl);Inne przychody netto (zl);Laczny zysk (zl)'
+      'Miesiac;Kupno (zl);Naprawy (zl);Transport (zl);Ogloszenia (zl);Sprzedaz sprzetu (zl);Zysk ze sprzetu (zl);Inne przychody netto (zl);Laczny zysk (zl)'
     );
     monthlyBreakdown.forEach((m) => {
       lines.push(
@@ -1350,6 +1393,8 @@ export default function App() {
           m.label,
           m.buy,
           m.repair,
+          m.transport,
+          m.ad,
           m.sell,
           m.equipProfit,
           m.otherProfit,
@@ -1656,12 +1701,14 @@ export default function App() {
               </div>
 
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3.5">
-                <div className="text-xs text-slate-400">Koszty napraw</div>
-                <div className="text-lg sm:text-xl font-bold text-amber-400 mt-1">
-                  {periodStats.totalRepair.toLocaleString('pl-PL')} zł
+                <div className="text-xs text-slate-400">
+                  Naprawy / Transp. / Ogł.
                 </div>
-                <div className="text-[11px] text-slate-500 mt-0.5">
-                  Części i serwis
+                <div className="text-lg sm:text-xl font-bold text-amber-400 mt-1">
+                  {periodStats.totalExtraCosts.toLocaleString('pl-PL')} zł
+                </div>
+                <div className="text-[11px] text-slate-400 mt-0.5">
+                  Napr: {periodStats.totalRepair} • Tr: {periodStats.totalTransport} • Ogł: {periodStats.totalAd} zł
                 </div>
               </div>
 
@@ -1716,6 +1763,8 @@ export default function App() {
                           <th className="p-3">Rok</th>
                           <th className="p-3">Kupno</th>
                           <th className="p-3">Naprawy</th>
+                          <th className="p-3">Transport</th>
+                          <th className="p-3">Ogłoszenia</th>
                           <th className="p-3">Sprzedaż</th>
                           <th className="p-3">Zysk (Sprzęt)</th>
                           <th className="p-3">Inne (FB/OLX)</th>
@@ -1744,6 +1793,12 @@ export default function App() {
                               </td>
                               <td className="p-3 text-amber-400 font-medium">
                                 {row.repair.toLocaleString('pl-PL')} zł
+                              </td>
+                              <td className="p-3 text-orange-300 font-medium">
+                                {row.transport.toLocaleString('pl-PL')} zł
+                              </td>
+                              <td className="p-3 text-pink-300 font-medium">
+                                {row.ad.toLocaleString('pl-PL')} zł
                               </td>
                               <td className="p-3 text-white font-semibold">
                                 {row.sell.toLocaleString('pl-PL')} zł
@@ -1793,6 +1848,8 @@ export default function App() {
                           <th className="p-3">Szt. (K / S)</th>
                           <th className="p-3">Kupno</th>
                           <th className="p-3">Naprawy</th>
+                          <th className="p-3">Transport</th>
+                          <th className="p-3">Ogłoszenia</th>
                           <th className="p-3">Sprzedaż</th>
                           <th className="p-3">Zysk (Sprzęt)</th>
                           <th className="p-3">Inne</th>
@@ -1802,7 +1859,12 @@ export default function App() {
                       <tbody className="divide-y divide-slate-800/70">
                         {monthlyBreakdown.map((m) => {
                           const cashFlow =
-                            m.sell + m.otherProfit - m.buy - m.repair;
+                            m.sell +
+                            m.otherProfit -
+                            m.buy -
+                            m.repair -
+                            m.transport -
+                            m.ad;
                           return (
                             <tr
                               key={m.ym}
@@ -1824,6 +1886,12 @@ export default function App() {
                               </td>
                               <td className="p-3 text-amber-400">
                                 {m.repair.toLocaleString('pl-PL')} zł
+                              </td>
+                              <td className="p-3 text-orange-300">
+                                {m.transport.toLocaleString('pl-PL')} zł
+                              </td>
+                              <td className="p-3 text-pink-300">
+                                {m.ad.toLocaleString('pl-PL')} zł
                               </td>
                               <td className="p-3 text-white font-semibold">
                                 {m.sell.toLocaleString('pl-PL')} zł
@@ -1873,7 +1941,7 @@ export default function App() {
                     Dodaj kupiony sprzęt (Kolumny / Wzmacniacz / Inne)
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-7 gap-2.5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
                     <input
                       type="text"
                       placeholder="Model (np. Pioneer SA-9500)"
@@ -1881,7 +1949,7 @@ export default function App() {
                       onChange={(e) =>
                         setNewItem({ ...newItem, name: e.target.value })
                       }
-                      className="lg:col-span-2 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-white focus:outline-none focus:border-amber-500"
+                      className="sm:col-span-2 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-white focus:outline-none focus:border-amber-500"
                     />
 
                     <select
@@ -1904,7 +1972,9 @@ export default function App() {
                       }
                       className="bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-white focus:outline-none focus:border-amber-500"
                     />
+                  </div>
 
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
                     <input
                       type="number"
                       min="0"
@@ -1933,12 +2003,39 @@ export default function App() {
                       type="number"
                       min="0"
                       step="any"
+                      placeholder="Koszt transportu (zł)"
+                      value={newItem.transportCost}
+                      onChange={(e) =>
+                        setNewItem({
+                          ...newItem,
+                          transportCost: e.target.value,
+                        })
+                      }
+                      className="bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-white focus:outline-none focus:border-orange-500"
+                    />
+
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      placeholder="Koszt ogłoszenia (zł)"
+                      value={newItem.adCost}
+                      onChange={(e) =>
+                        setNewItem({ ...newItem, adCost: e.target.value })
+                      }
+                      className="bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-white focus:outline-none focus:border-pink-500"
+                    />
+
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
                       placeholder="Sprzedaż (puste=stan)"
                       value={newItem.sellPrice}
                       onChange={(e) =>
                         setNewItem({ ...newItem, sellPrice: e.target.value })
                       }
-                      className="bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-white focus:outline-none focus:border-amber-500"
+                      className="col-span-2 sm:col-span-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs sm:text-sm text-white focus:outline-none focus:border-emerald-500"
                     />
                   </div>
 
@@ -2017,6 +2114,8 @@ export default function App() {
                           <th className="p-3">Kategoria</th>
                           <th className="p-3">Kupno</th>
                           <th className="p-3">Naprawa</th>
+                          <th className="p-3">Transport</th>
+                          <th className="p-3">Ogłoszenie</th>
                           <th className="p-3">Sprzedaż</th>
                           <th className="p-3">Zysk netto</th>
                           <th className="p-3 text-right">Akcje</th>
@@ -2026,7 +2125,7 @@ export default function App() {
                         {filteredItems.length === 0 ? (
                           <tr>
                             <td
-                              colSpan={8}
+                              colSpan={10}
                               className="p-8 text-center text-slate-400"
                             >
                               Brak pozycji spełniających wybrane kryteria.
@@ -2036,10 +2135,14 @@ export default function App() {
                           filteredItems.map((item) => {
                             const isSold =
                               item.sellPrice !== null && item.sellPrice !== '';
+                            const trans = Number(item.transportCost) || 0;
+                            const ad = Number(item.adCost) || 0;
                             const profit = isSold
                               ? Number(item.sellPrice) -
                                 Number(item.buyPrice) -
-                                Number(item.repairCost)
+                                Number(item.repairCost) -
+                                trans -
+                                ad
                               : null;
                             const isEditing = editingItemId === item.id;
 
@@ -2092,6 +2195,34 @@ export default function App() {
                                     `${Number(item.repairCost).toLocaleString(
                                       'pl-PL'
                                     )} zł`
+                                  )}
+                                </td>
+                                <td className="p-3 text-orange-300 whitespace-nowrap">
+                                  {isEditing ? (
+                                    <input
+                                      type="number"
+                                      value={editTransportValue}
+                                      onChange={(e) =>
+                                        setEditTransportValue(e.target.value)
+                                      }
+                                      className="w-20 bg-slate-950 border border-orange-500 rounded px-2 py-1 text-xs text-white"
+                                    />
+                                  ) : (
+                                    `${trans.toLocaleString('pl-PL')} zł`
+                                  )}
+                                </td>
+                                <td className="p-3 text-pink-300 whitespace-nowrap">
+                                  {isEditing ? (
+                                    <input
+                                      type="number"
+                                      value={editAdValue}
+                                      onChange={(e) =>
+                                        setEditAdValue(e.target.value)
+                                      }
+                                      className="w-20 bg-slate-950 border border-pink-500 rounded px-2 py-1 text-xs text-white"
+                                    />
+                                  ) : (
+                                    `${ad.toLocaleString('pl-PL')} zł`
                                   )}
                                 </td>
                                 <td className="p-3 whitespace-nowrap">
